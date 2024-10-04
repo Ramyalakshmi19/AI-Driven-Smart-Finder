@@ -1,0 +1,6 @@
+numpy==1.23.5
+sounddevice==0.4.6
+SpeechRecognition==3.8.1
+spacy==3.7.2
+opencv-python==4.8.0.74
+
