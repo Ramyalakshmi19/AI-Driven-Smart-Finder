@@ -5,10 +5,105 @@ import speech_recognition as sr
 import nltk
 from nltk import pos_tag, word_tokenize
 import cv2
+import torch
+import matplotlib.pyplot as plt
+from shapely.geometry import box as shapely_box
 
 # Download required NLTK data
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
+
+# Initialize YOLOv5 model
+model = torch.hub.load('ultralytics/yolov5', 'yolov5l')  # Load pre-trained YOLOv5 small model
+
+# Define classes for small objects and potential surfaces
+small_objects = ['remote', 'scissors', 'cup', 'book', 'magazine', 'figurine', 'lamp switch', 'potted plant', 'sofa', 'clock']
+surface_objects = ['dining table', 'table', 'desk', 'shelf', 'chair', 'sofa']
+
+# Get class indices for small objects and surfaces
+small_object_indices = [model.names.index(obj) for obj in small_objects if obj in model.names]
+surface_object_indices = [model.names.index(obj) for obj in surface_objects if obj in model.names]
+
+# Function to check intersection between two bounding boxes
+def check_intersection(bbox1, bbox2):
+    box1 = shapely_box(*bbox1)  # Convert to shapely box
+    box2 = shapely_box(*bbox2)  # Convert to shapely box
+    return box1.intersects(box2)
+
+# Function to calculate IoU (Intersection over Union)
+def calculate_iou(bbox1, bbox2):
+    box1 = shapely_box(*bbox1)  # Convert to shapely box
+    box2 = shapely_box(*bbox2)  # Convert to shapely box
+    intersection_area = box1.intersection(box2).area
+    union_area = box1.union(box2).area
+    return intersection_area / union_area if union_area != 0 else 0
+# Update to ensure proper scaling of bounding boxes and visibility of text
+def detect_objects_in_image(image_path):
+    img = cv2.imread(image_path)  # Read the image using OpenCV
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert from BGR to RGB
+    img_original = img.copy()  # Copy original image to keep it intact for visualization
+    img = cv2.resize(img, (1280, 960))  # Resize the image to match the model input size if required
+
+    # Perform prediction
+    results = model(img)  # Forward pass
+
+    # Store detected objects with their bounding boxes, labels, and confidence scores
+    detected_objects = []
+    for box in results.xywh[0]:
+        class_index = int(box[5].item())
+        label = model.names[class_index]
+        bbox = box[:4].numpy()  # Extract bounding box as [x_center, y_center, width, height]
+        confidence = box[4].item()  # Confidence score
+        detected_objects.append({'label': label, 'bbox': bbox, 'confidence': confidence, 'class_index': class_index})
+
+        # Draw bounding box and label on the image
+        x_center, y_center, width, height = bbox
+        x1 = int((x_center - width / 2) * img.shape[1])
+        y1 = int((y_center - height / 2) * img.shape[0])
+        x2 = int((x_center + width / 2) * img.shape[1])
+        y2 = int((y_center + height / 2) * img.shape[0])
+
+        # Draw the rectangle (bounding box) in red
+        cv2.rectangle(img_original, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Red rectangle
+        # Draw label in white with black background
+        cv2.putText(img_original, f"{label} {confidence:.2f}", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(img_original, f"{label} {confidence:.2f}", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)  # Shadow for better readability
+
+    # Save the annotated image with bounding boxes
+    annotated_image_path = "/home/fyp/Downloads/FYP_code/annotated_image.jpg"
+    cv2.imwrite(annotated_image_path, cv2.cvtColor(img_original, cv2.COLOR_RGB2BGR))
+
+    return detected_objects, annotated_image_path
+
+
+
+# Define a function to find and describe relationships between target and surrounding objects
+def describe_object_location(target_label, detected_objects, default_surface="table"):
+    target = next((obj for obj in detected_objects if obj['label'] == target_label), None)
+    if not target:
+        print(f"{target_label} not found.")
+        return
+
+    target_bbox = target['bbox']
+    found_description = False
+
+    for obj in detected_objects:
+        if obj['label'] != target_label:
+            # Check intersection with other objects
+            iou = calculate_iou(target_bbox, obj['bbox'])
+            print(f"IOU between {target_label} and {obj['label']}: {iou:.2f}")
+            if check_intersection(target_bbox, obj['bbox']):
+                # Determine the spatial relationship
+                relationship = "on" if obj['label'] in surface_objects else "near"
+                print(f"The {target_label} is {relationship} the {obj['label']}. (Confidence: {obj['confidence']:.2f})")
+                found_description = True
+                break
+
+    # If no relevant surfaces or nearby objects were detected, use a default response
+    if not found_description:
+        print(f"The {target_label} was found near the {default_surface}.")
 
 def extract_base_objects(sentence):
     tokens = word_tokenize(sentence)
@@ -117,7 +212,14 @@ def main():
             print("Command:", text)
             objects = extract_base_objects(text)
             print(f"Sentence: '{text}' | Objects: {objects}")
+
+            # Capture image and detect objects
             capture_and_process_image()
+            detected_objects, annotated_image_path = detect_objects_in_image("/home/fyp/Downloads/FYP_code/Living_room.jpg")
+
+            for obj in objects:
+                describe_object_location(obj, detected_objects)
+
 
 if __name__ == "__main__":
     main()
